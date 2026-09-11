@@ -1,0 +1,15 @@
+.git
+.env
+.env.*
+.venv
+.local
+__pycache__
+**/__pycache__
+.pytest_cache
+.ruff_cache
+data
+models
+notebooks
+frontend
+docs
+*.log
