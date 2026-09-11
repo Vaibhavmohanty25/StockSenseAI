@@ -728,33 +728,6 @@ Paper trading
 
 ---
 
-# Phase 1 Success Criteria
-
-Phase 1 is considered complete when:
-
-```text
-Django backend runs successfully.
-
-PostgreSQL stores stock and historical price data.
-
-Redis and Celery workers operate successfully.
-
-Market data can be ingested through a reusable provider interface.
-
-NSE/BSE symbols are normalized correctly.
-
-Historical OHLCV data can be retrieved through the API.
-
-Environment secrets are not committed to Git.
-
-Docker can launch the development stack.
-
-Core modules have automated tests.
-
-The architecture remains independent from any single market-data provider.
-```
-
----
 
 # Development Principles
 
