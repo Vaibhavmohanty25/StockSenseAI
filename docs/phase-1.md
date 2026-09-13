@@ -157,6 +157,18 @@ return `SecurityData` and `HistoricalPrice` dataclasses. To add an adapter later
 these methods and register the class in `providers/registry.py`. Core ingestion and views
 need no vendor-specific changes.
 
+The NSE adapter retrieves daily historical OHLCV from NSE's official downloadable **CM-UDiFF
+Common Bhavcopy Final** archive. For a requested day it first requests
+`https://nsearchives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_YYYYMMDD_F_0000.csv.zip`.
+If that dated archive returns 404, it explicitly falls back to the official press-file archive
+using the documented `https://nsearchives.nseindia.com/content/cm/PRddmmyy.zip` convention.
+It requests one report for each weekday in the requested interval; weekends and dated 404s are
+treated as non-trading days. Provider readiness searches the preceding 14 calendar days,
+skipping weekends, and is READY only after one official archive downloads and parses.
+Bhavcopy provides EOD open, high, low, close and traded quantity but no adjusted close, so NSE
+rows persist `adjusted_close` as `null` rather than inventing an adjusted value, and retain
+`source="nse_eod"`.
+
 The mock supports TCS, INFY and RELIANCE on NSE/BSE; company names explicitly identify
 synthetic fixtures. Prices are stable across overlapping requests and skip weekends.
 They are not actual market prices and do not model exchange holidays or corporate actions.

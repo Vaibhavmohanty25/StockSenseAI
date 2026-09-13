@@ -11,7 +11,9 @@ class MarketDataProvider(ABC):
     name: str
 
     @abstractmethod
-    def get_security(self, symbol: str, exchange: str) -> SecurityData:
+    def get_security(
+        self, symbol: str, exchange: str, identifier: str | None = None
+    ) -> SecurityData:
         """Return metadata or raise ValueError for an unsupported security."""
 
     @abstractmethod
@@ -21,5 +23,10 @@ class MarketDataProvider(ABC):
         exchange: str,
         start: date,
         end: date,
+        identifier: str | None = None,
     ) -> Iterable[HistoricalPrice]:
         """Return normalized daily bars for the inclusive interval."""
+
+    def health_check(self) -> None:
+        """Perform a lightweight provider readiness check when supported."""
+        return None

@@ -8,7 +8,12 @@ from time import monotonic
 from django.db import transaction
 from django.utils import timezone
 
-from apps.market.models import DailyPrice, Exchange, Security
+from apps.market.models import (
+    DailyPrice,
+    Exchange,
+    Security,
+    SecurityExternalIdentifier,
+)
 from src.data_ingestion.base import MarketDataProvider
 from src.data_ingestion.domain import HistoricalPrice, SecurityData, validate_range
 
@@ -88,6 +93,19 @@ def _persist(
     return len(inserts), len(updates)
 
 
+def _external_identifier(symbol: str, exchange: str, provider_name: str) -> str | None:
+    """Use a configured vendor identifier when the internal security already exists."""
+    return (
+        SecurityExternalIdentifier.objects.filter(
+            security__exchange__code=exchange,
+            security__symbol=symbol,
+            provider=provider_name.lower(),
+        )
+        .values_list("identifier", flat=True)
+        .first()
+    )
+
+
 def ingest_historical_prices(
     *, symbol: str, exchange: str, start: date, end: date, provider: MarketDataProvider
 ) -> IngestionRun:
@@ -103,13 +121,23 @@ def ingest_historical_prices(
     rows: list[HistoricalPrice] = []
     try:
         validate_range(start, end)
-        metadata = provider.get_security(symbol, exchange)
+        identifier = _external_identifier(symbol, exchange, provider.name)
+        if identifier is None:
+            metadata = provider.get_security(symbol, exchange)
+        else:
+            metadata = provider.get_security(symbol, exchange, identifier=identifier)
         if not isinstance(metadata, SecurityData) or (
             metadata.symbol,
             metadata.exchange,
         ) != (symbol, exchange):
             raise ValueError("Provider returned incorrect security metadata.")
-        for row in provider.get_historical_prices(symbol, exchange, start, end):
+        if identifier is None:
+            provider_rows = provider.get_historical_prices(symbol, exchange, start, end)
+        else:
+            provider_rows = provider.get_historical_prices(
+                symbol, exchange, start, end, identifier=identifier
+            )
+        for row in provider_rows:
             rows.append(row)
             if len(rows) > MAX_PROVIDER_ROWS:
                 raise ValueError("Provider response exceeds the batch row limit.")

@@ -26,9 +26,15 @@ class JSONFormatter(logging.Formatter):
             "rows_inserted",
             "rows_updated",
             "rows_failed",
+            "rows_normalized",
+            "rows_rejected",
             "duration",
             "status",
             "error_type",
+            "candidate_date",
+            "report_source",
+            "request_url",
+            "final_url",
         ):
             if hasattr(record, key):
                 payload[key] = getattr(record, key)

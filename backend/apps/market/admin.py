@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import DailyPrice, Exchange, Security
+from .models import DailyPrice, Exchange, Security, SecurityExternalIdentifier
 
 
 @admin.register(Exchange)
@@ -25,6 +25,14 @@ class SecurityAdmin(admin.ModelAdmin):
     search_fields = ("symbol", "company_name", "isin")
     list_select_related = ("exchange",)
     ordering = ("exchange__code", "symbol")
+
+
+@admin.register(SecurityExternalIdentifier)
+class SecurityExternalIdentifierAdmin(admin.ModelAdmin):
+    list_display = ("provider", "identifier", "security", "updated_at")
+    list_select_related = ("security", "security__exchange")
+    search_fields = ("provider", "identifier", "security__symbol")
+    list_filter = ("provider", "security__exchange")
 
 
 @admin.register(DailyPrice)

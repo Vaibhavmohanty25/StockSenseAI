@@ -1,11 +1,18 @@
 from dataclasses import replace
 from datetime import date
 from decimal import Decimal
+from io import BytesIO
+from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
 from apps.ingestion.models import IngestionRun
 from apps.ingestion.services import IngestionError, ingest_historical_prices
-from apps.market.models import DailyPrice
+from apps.market.models import (
+    DailyPrice,
+    Exchange,
+    Security,
+    SecurityExternalIdentifier,
+)
 from django.core.management import call_command
 
 from src.data_ingestion.providers.mock import MockMarketDataProvider
@@ -39,8 +46,8 @@ def test_ingestion_persists_and_is_idempotent():
 
 
 class RevisedProvider(MockMarketDataProvider):
-    def get_historical_prices(self, *args):
-        for row in super().get_historical_prices(*args):
+    def get_historical_prices(self, *args, identifier=None):
+        for row in super().get_historical_prices(*args, identifier=identifier):
             yield replace(row, volume=777)
 
 
@@ -52,8 +59,8 @@ def test_changed_rows_are_updated():
 
 
 class DuplicateProvider(MockMarketDataProvider):
-    def get_historical_prices(self, *args):
-        rows = list(super().get_historical_prices(*args))
+    def get_historical_prices(self, *args, identifier=None):
+        rows = list(super().get_historical_prices(*args, identifier=identifier))
         return rows + rows
 
 
@@ -63,8 +70,8 @@ def test_identical_duplicates_collapsed():
 
 
 class ConflictProvider(MockMarketDataProvider):
-    def get_historical_prices(self, *args):
-        rows = list(super().get_historical_prices(*args))
+    def get_historical_prices(self, *args, identifier=None):
+        rows = list(super().get_historical_prices(*args, identifier=identifier))
         return rows + [replace(rows[0], volume=999)]
 
 
@@ -79,8 +86,8 @@ def test_conflicting_duplicates_fail_without_partial_writes():
 
 
 class WrongSecurityProvider(MockMarketDataProvider):
-    def get_historical_prices(self, *args):
-        for row in super().get_historical_prices(*args):
+    def get_historical_prices(self, *args, identifier=None):
+        for row in super().get_historical_prices(*args, identifier=identifier):
             yield replace(row, exchange="BSE")
 
 
@@ -91,8 +98,8 @@ def test_provider_cannot_contaminate_another_security():
 
 
 class BrokenProvider(MockMarketDataProvider):
-    def get_historical_prices(self, *args):
-        yield from super().get_historical_prices(*args)
+    def get_historical_prices(self, *args, identifier=None):
+        yield from super().get_historical_prices(*args, identifier=identifier)
         raise RuntimeError("vendor error containing secret-key")
 
 
@@ -195,8 +202,8 @@ def test_concurrent_initial_imports_have_accurate_counts():
     barrier = Barrier(2)
 
     class ConcurrentProvider(MockMarketDataProvider):
-        def get_historical_prices(self, *args):
-            rows = list(super().get_historical_prices(*args))
+        def get_historical_prices(self, *args, identifier=None):
+            rows = list(super().get_historical_prices(*args, identifier=identifier))
             barrier.wait(timeout=10)
             return rows
 
@@ -233,3 +240,124 @@ def test_inactive_exchange_rejected():
     with pytest.raises(IngestionError):
         ingest()
     assert not DailyPrice.objects.exists()
+
+
+def test_ingestion_uses_external_identifier_without_changing_security_symbol():
+    captured = []
+
+    class IdentifierProvider(MockMarketDataProvider):
+        name = "nse"
+
+        def get_security(self, symbol, exchange, identifier=None):
+            captured.append(("security", symbol, identifier))
+            return super().get_security(symbol, exchange, identifier)
+
+        def get_historical_prices(self, symbol, exchange, start, end, identifier=None):
+            captured.append(("prices", symbol, identifier))
+            for row in super().get_historical_prices(
+                symbol, exchange, start, end, identifier
+            ):
+                yield replace(row, source="nse_eod")
+
+    stock = Security.objects.create(
+        exchange=Exchange.objects.get(code="NSE"), symbol="TCS", company_name="TCS"
+    )
+    SecurityExternalIdentifier.objects.create(
+        security=stock, provider="nse", identifier="TCS-EQ"
+    )
+    run = ingest(IdentifierProvider())
+    assert run.rows_inserted == 3
+    assert captured == [("security", "TCS", "TCS-EQ"), ("prices", "TCS", "TCS-EQ")]
+    prices = DailyPrice.objects.filter(
+        security=stock,
+        date__range=(date(2026, 1, 5), date(2026, 1, 7)),
+    ).order_by("date")
+    assert prices.count() == 3
+    assert [price.date for price in prices] == [
+        date(2026, 1, 5),
+        date(2026, 1, 6),
+        date(2026, 1, 7),
+    ]
+    assert all(price.security.symbol == "TCS" for price in prices)
+    assert set(prices.values_list("source", flat=True)) == {"nse_eod"}
+
+
+def test_real_provider_style_rows_are_idempotent():
+    class NSEStyleProvider(MockMarketDataProvider):
+        name = "nse"
+
+        def get_historical_prices(self, *args, **kwargs):
+            for row in super().get_historical_prices(*args, **kwargs):
+                yield replace(row, source="nse_eod")
+
+    first = ingest(NSEStyleProvider())
+    second = ingest(NSEStyleProvider())
+    assert (first.rows_inserted, second.rows_inserted, second.rows_updated) == (3, 0, 0)
+    assert set(DailyPrice.objects.values_list("source", flat=True)) == {"nse_eod"}
+
+
+def test_nse_bhavcopy_ingestion_is_idempotent(monkeypatch):
+    from src.data_ingestion.providers.nse_provider import NSEMarketDataProvider
+
+    def report(rows):
+        buffer = BytesIO()
+        with ZipFile(buffer, "w", ZIP_DEFLATED) as archive:
+            archive.writestr(
+                "pr05012026.csv",
+                "SYMBOL,SERIES,OPEN,HIGH,LOW,CLOSE,TOTTRDQTY\n" + rows,
+            )
+        return buffer.getvalue()
+
+    bhavcopy = report("TCS,EQ,4000,4050,3980,4025,12345\n")
+    responses = iter([bhavcopy, bhavcopy, bhavcopy, bhavcopy])
+
+    class Response:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def read(self):
+            return self.payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(
+        "src.data_ingestion.providers.http.urlopen",
+        lambda request, timeout: Response(next(responses)),
+    )
+    options = dict(
+        symbol="TCS",
+        exchange="NSE",
+        start=date(2026, 1, 5),
+        end=date(2026, 1, 5),
+        provider=NSEMarketDataProvider(retry_attempts=1),
+    )
+    first = ingest_historical_prices(**options)
+    second = ingest_historical_prices(**options)
+    assert (first.rows_inserted, second.rows_inserted, second.rows_updated) == (1, 0, 0)
+    assert DailyPrice.objects.get().source == "nse_eod"
+    assert DailyPrice.objects.get().adjusted_close is None
+
+
+def test_check_provider_command_reports_ready_and_not_ready(monkeypatch, capsys):
+    from apps.ingestion.management.commands import check_market_provider
+
+    from src.data_ingestion.exceptions import ProviderConfigurationError
+
+    monkeypatch.setattr(
+        check_market_provider,
+        "get_market_data_provider",
+        lambda name: MockMarketDataProvider(),
+    )
+    call_command("check_market_provider", provider="mock")
+    assert "READY" in capsys.readouterr().out
+
+    def unavailable(name):
+        raise ProviderConfigurationError("missing BSE configuration")
+
+    monkeypatch.setattr(check_market_provider, "get_market_data_provider", unavailable)
+    call_command("check_market_provider", provider="bse")
+    assert "NOT READY" in capsys.readouterr().out

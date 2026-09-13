@@ -16,7 +16,9 @@ class MockMarketDataProvider(MarketDataProvider):
         "RELIANCE": "Reliance Industries",
     }
 
-    def get_security(self, symbol: str, exchange: str) -> SecurityData:
+    def get_security(
+        self, symbol: str, exchange: str, identifier: str | None = None
+    ) -> SecurityData:
         if exchange not in {"NSE", "BSE"} or symbol not in self.companies:
             raise ValueError("Unsupported mock security or exchange.")
         return SecurityData(
@@ -31,8 +33,10 @@ class MockMarketDataProvider(MarketDataProvider):
         exchange: str,
         start: date,
         end: date,
+        identifier: str | None = None,
     ) -> Iterable[HistoricalPrice]:
-        self.get_security(symbol, exchange)
+        if exchange not in {"NSE", "BSE"} or symbol not in self.companies:
+            raise ValueError("Unsupported mock security or exchange.")
         validate_range(start, end)
         for offset in range((end - start).days + 1):
             day = start + timedelta(days=offset)

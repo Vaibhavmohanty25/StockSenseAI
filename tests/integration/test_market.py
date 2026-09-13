@@ -2,7 +2,12 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
-from apps.market.models import DailyPrice, Exchange, Security
+from apps.market.models import (
+    DailyPrice,
+    Exchange,
+    Security,
+    SecurityExternalIdentifier,
+)
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
 from django.db import IntegrityError, transaction
@@ -89,3 +94,24 @@ def test_admin_clean_normalizes_identifiers():
     exchange = Exchange(code=" nse ", name="National")
     exchange.full_clean()
     assert exchange.code == "NSE"
+
+
+def test_external_identifier_is_unique_per_provider_and_preserves_security_symbols(
+    security,
+):
+    first = SecurityExternalIdentifier.objects.create(
+        security=security, provider="nse", identifier="RELIANCE-EQ"
+    )
+    assert first.provider == "nse"
+    assert first.identifier == "RELIANCE-EQ"
+    other = Security.objects.create(
+        exchange=Exchange.objects.get(code="NSE"), symbol="INFY", company_name="Infosys"
+    )
+    with pytest.raises(IntegrityError), transaction.atomic():
+        SecurityExternalIdentifier.objects.create(
+            security=other, provider="nse", identifier="RELIANCE-EQ"
+        )
+    with pytest.raises(IntegrityError), transaction.atomic():
+        SecurityExternalIdentifier.objects.create(
+            security=security, provider="nse", identifier="OTHER"
+        )

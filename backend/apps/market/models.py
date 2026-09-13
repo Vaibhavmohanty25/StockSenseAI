@@ -86,6 +86,47 @@ class Security(TimestampedModel):
         return f"{self.exchange.code}:{self.symbol}"
 
 
+class SecurityExternalIdentifier(TimestampedModel):
+    """Vendor identifier distinct from the internal security symbol."""
+
+    security = models.ForeignKey(
+        Security, on_delete=models.PROTECT, related_name="external_identifiers"
+    )
+    provider = models.CharField(max_length=64)
+    identifier = models.CharField(max_length=128)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["security", "provider"],
+                name="security_provider_identifier_uniq",
+            ),
+            models.UniqueConstraint(
+                fields=["provider", "identifier"], name="provider_identifier_uniq"
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["provider", "identifier"], name="provider_identifier_idx"
+            )
+        ]
+
+    def clean(self) -> None:
+        self.provider = self.provider.strip().lower()
+        self.identifier = self.identifier.strip()
+        if not self.provider or not self.identifier:
+            raise ValidationError("Provider and external identifier are required.")
+        super().clean()
+
+    def save(self, *args, **kwargs) -> None:
+        self.provider = self.provider.strip().lower()
+        self.identifier = self.identifier.strip()
+        super().save(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return f"{self.provider}:{self.identifier} ({self.security})"
+
+
 class DailyPrice(TimestampedModel):
     security = models.ForeignKey(
         Security, on_delete=models.PROTECT, related_name="prices"
